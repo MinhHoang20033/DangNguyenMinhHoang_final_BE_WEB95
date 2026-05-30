@@ -1,13 +1,33 @@
 import bcrypt from "bcryptjs";
+import fs from "fs/promises";
+import path from "path";
 
 import Employee from "../models/Employee.js";
 import Project from "../models/Project.js";
 import User from "../models/User.js";
+import { getUploadRoot } from "../middleware/upload.js";
 import { badRequest, notFound } from "../utils/httpError.js";
 import { normalizeMoneyValue } from "../utils/numbers.js";
 import { getBaseUrl } from "../utils/request.js";
 
 const buildEmployeeAvatarUrl = (req, filename) => `${getBaseUrl(req)}/uploads/${filename}`;
+
+/** On Vercel, store avatar in MongoDB (base64) — /tmp files do not persist */
+const buildEmployeeAvatarFromFile = async (req, file) => {
+  if (!file) {
+    return "";
+  }
+
+  if (process.env.VERCEL) {
+    const filePath = path.join(getUploadRoot(), file.filename);
+    const buffer = await fs.readFile(filePath);
+    const mimeType = file.mimetype || "image/jpeg";
+    await fs.unlink(filePath).catch(() => {});
+    return `data:${mimeType};base64,${buffer.toString("base64")}`;
+  }
+
+  return buildEmployeeAvatarUrl(req, file.filename);
+};
 
 const ACCOUNT_ROLES = ["employee", "PM"];
 const EMPLOYEE_CODE_ATTEMPTS = 200;
@@ -270,7 +290,9 @@ export const createEmployee = async (req, res) => {
       ...employeePayload,
       email: normalizedEmail,
       salary: normalizeMoneyValue(employeePayload.salary),
-      avatar: req.file ? buildEmployeeAvatarUrl(req, req.file.filename) : employeePayload.avatar || "",
+      avatar: req.file
+        ? await buildEmployeeAvatarFromFile(req, req.file)
+        : employeePayload.avatar || "",
     });
 
     await employee.save();
@@ -319,7 +341,7 @@ export const updateEmployee = async (req, res) => {
   };
 
   if (req.file) {
-    updateData.avatar = buildEmployeeAvatarUrl(req, req.file.filename);
+    updateData.avatar = await buildEmployeeAvatarFromFile(req, req.file);
   }
 
   const updated = await Employee.findByIdAndUpdate(employeeId, updateData, { new: true });
