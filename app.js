@@ -8,6 +8,7 @@ import employeeRoutes from "./routes/employees.js";
 import partnerRoutes from "./routes/partners.js";
 import projectRoutes from "./routes/projects.js";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler.js";
+import { getUploadRoot } from "./middleware/upload.js";
 
 const app = express();
 
@@ -45,7 +46,7 @@ if (process.env.VERCEL) {
 }
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
-app.use("/uploads", express.static("uploads"));
+app.use("/uploads", express.static(getUploadRoot()));
 
 app.get("/", (req, res) => {
   res.send("API running...");

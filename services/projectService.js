@@ -3,7 +3,7 @@ import fs from "fs/promises";
 import path from "path";
 
 import Employee from "../models/Employee.js";
-import { ensureUploadDirectory, sanitizeUploadFolderName } from "../middleware/upload.js";
+import { ensureUploadDirectory, getUploadRoot, sanitizeUploadFolderName } from "../middleware/upload.js";
 import { forbidden } from "../utils/httpError.js";
 
 export const EMPLOYEE_EDITABLE_FIELDS = ["progressChecks", "chatMessages", "tasks"];
@@ -247,8 +247,8 @@ export const collectTaskFileUrls = (task = {}) => [
 ];
 
 const getUploadAbsolutePath = (url) => {
-  const relativePath = String(url).replace(/^\/+/, "").replace(/\//g, path.sep);
-  return path.resolve(process.cwd(), relativePath);
+  const normalized = String(url).replace(/^\/uploads\/?/, "").replace(/\//g, path.sep);
+  return path.join(getUploadRoot(), normalized);
 };
 
 export const deleteFilesByUrls = async (urls = []) => {
@@ -256,7 +256,7 @@ export const deleteFilesByUrls = async (urls = []) => {
 };
 
 export const deleteProjectUploadDirectory = async (project) => {
-  const folderPath = path.resolve(process.cwd(), "uploads", getProjectUploadSubdir(project));
+  const folderPath = path.join(getUploadRoot(), getProjectUploadSubdir(project));
   await fs.rm(folderPath, { recursive: true, force: true }).catch(() => {});
 };
 

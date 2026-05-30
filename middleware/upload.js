@@ -19,8 +19,12 @@ export const sanitizeUploadFolderName = (value = "") =>
     .replace(/^-|-$/g, "")
     .slice(0, 80) || "project";
 
+/** Vercel serverless only allows writes under /tmp */
+export const getUploadRoot = () =>
+  process.env.VERCEL ? path.join("/tmp", "uploads") : path.join(process.cwd(), "uploads");
+
 export const ensureUploadDirectory = (subdir = "") => {
-  const targetDir = path.join("uploads", subdir);
+  const targetDir = path.join(getUploadRoot(), subdir);
   fs.mkdirSync(targetDir, { recursive: true });
   return targetDir;
 };
