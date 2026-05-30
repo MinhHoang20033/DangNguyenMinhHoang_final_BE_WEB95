@@ -1,11 +1,9 @@
 /* global process */
-import dotenv from "dotenv";
+import "dotenv/config";
 
 import app from "./app.js";
 import { connectDatabase } from "./config/database.js";
 import { seedDefaultUsers } from "./config/seedUsers.js";
-
-dotenv.config();
 
 const port = process.env.PORT || 5000;
 
