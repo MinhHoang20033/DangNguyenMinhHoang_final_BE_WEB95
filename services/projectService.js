@@ -215,6 +215,90 @@ export const buildEmployeeTaskProgressLogs = (
 };
 
 export const TASK_SECTION_LABEL = "Công việc dự án";
+export const OVERVIEW_SECTION_KEY = "overview";
+export const OVERVIEW_SECTION_LABEL = "Thông tin dự án";
+export const MEMBERS_SECTION_KEY = "members";
+export const MEMBERS_SECTION_LABEL = "Phân công nhân sự";
+
+const OVERVIEW_TRACKED_FIELDS = [
+  { key: "name", label: "tên dự án" },
+  { key: "status", label: "trạng thái" },
+  { key: "deadline", label: "hạn dự án" },
+  { key: "managerName", label: "người quản lý" },
+  { key: "siteName", label: "công trường" },
+  { key: "code", label: "mã dự án" },
+  { key: "desc", label: "mô tả" },
+];
+
+const normalizeComparableValue = (value) => {
+  if (value == null) return "";
+  if (typeof value === "string") return value.trim();
+  return String(value);
+};
+
+const buildOverviewActivityLogs = (existing, bodyForUpdate, actorName) => {
+  const changedLabels = OVERVIEW_TRACKED_FIELDS.filter(({ key }) => {
+    if (!(key in bodyForUpdate)) {
+      return false;
+    }
+    return normalizeComparableValue(existing[key]) !== normalizeComparableValue(bodyForUpdate[key]);
+  }).map(({ label }) => label);
+
+  if (!changedLabels.length) {
+    return [];
+  }
+
+  const detail =
+    changedLabels.length <= 3
+      ? changedLabels.join(", ")
+      : `${changedLabels.slice(0, 3).join(", ")} và ${changedLabels.length - 3} mục khác`;
+
+  return [
+    createActivityLogEntry({
+      actorName,
+      sectionKey: OVERVIEW_SECTION_KEY,
+      sectionLabel: OVERVIEW_SECTION_LABEL,
+      text: `${actorName} đã cập nhật thông tin dự án (${detail})`,
+    }),
+  ];
+};
+
+const buildMembersActivityLogs = (existing, bodyForUpdate, actorName) => {
+  if (!("members" in bodyForUpdate)) {
+    return [];
+  }
+
+  const previousIds = new Set(
+    (existing.members ?? []).map((member) => String(member.employeeId)).filter(Boolean),
+  );
+  const nextIds = new Set(
+    (bodyForUpdate.members ?? []).map((member) => String(member.employeeId)).filter(Boolean),
+  );
+
+  const addedCount = [...nextIds].filter((id) => !previousIds.has(id)).length;
+  const removedCount = [...previousIds].filter((id) => !nextIds.has(id)).length;
+
+  if (!addedCount && !removedCount) {
+    return [];
+  }
+
+  const parts = [];
+  if (addedCount) {
+    parts.push(`thêm ${addedCount} thành viên`);
+  }
+  if (removedCount) {
+    parts.push(`xóa ${removedCount} thành viên`);
+  }
+
+  return [
+    createActivityLogEntry({
+      actorName,
+      sectionKey: MEMBERS_SECTION_KEY,
+      sectionLabel: MEMBERS_SECTION_LABEL,
+      text: `${actorName} đã ${parts.join(" và ")}`,
+    }),
+  ];
+};
 export const EXCEL_EXTENSIONS = [".xls", ".xlsx", ".csv"];
 
 export const isAdmin = (req) => req.user?.role === "admin";
@@ -531,6 +615,11 @@ export const buildProjectUpdatePayload = async ({ req, existing }) => {
         ...buildTaskActivityLogs(existingPlainTasks, bodyForUpdate.tasks ?? [], actorName),
       );
     }
+  }
+
+  if (isAdmin(req)) {
+    nextActivityLogs.push(...buildOverviewActivityLogs(existing, bodyForUpdate, actorName));
+    nextActivityLogs.push(...buildMembersActivityLogs(existing, bodyForUpdate, actorName));
   }
 
   const progressChanged =
