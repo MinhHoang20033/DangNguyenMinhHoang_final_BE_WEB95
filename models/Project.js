@@ -3,7 +3,6 @@ import mongoose from "mongoose";
 const memberSchema = new mongoose.Schema(
   {
     employeeId: { type: String, default: "" },
-    assignment: { type: String, default: "" },
   },
   { _id: false },
 );
@@ -12,6 +11,7 @@ const chatMessageSchema = new mongoose.Schema(
   {
     id: { type: String, required: true },
     author: { type: String, default: "" },
+    authorId: { type: String, default: "" },
     text: { type: String, default: "" },
     createdAt: { type: Date, default: Date.now },
   },
@@ -76,19 +76,13 @@ const taskSchema = new mongoose.Schema(
 
 const projectSchema = new mongoose.Schema({
   name: { type: String, default: "" },
-  /** Hạn dự án (ISO hoặc YYYY-MM-DD), dùng cho danh sách / trạng thái trễ hạn */
   deadline: { type: String, default: "" },
-  /** Nhân viên quản lý dự án (employeeId) — dùng cho phân công thành viên */
-  managerId: { type: String, default: "" },
-  /** Tên quản lý dự án (nhập tay, hiển thị tổng quan) */
   managerName: { type: String, default: "" },
   status: { type: String, enum: ["active", "inactive"], default: "active" },
   desc: { type: String, default: "" },
   formNo: { type: String, default: "" },
-  date: { type: String, default: "" },
   code: { type: String, default: "" },
   siteName: { type: String, default: "" },
-  /** Tiến độ dự án: { title, subtitle, columns[], rows[] } */
   progressChecks: {
     type: mongoose.Schema.Types.Mixed,
     default: () => ({}),

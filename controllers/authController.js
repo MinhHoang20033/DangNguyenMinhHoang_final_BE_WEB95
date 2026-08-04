@@ -1,4 +1,4 @@
-/* global process */
+
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
@@ -20,19 +20,29 @@ const signAuthToken = (user) =>
     { expiresIn: "2h" },
   );
 
+const normalizeEmail = (email) => (email == null ? "" : String(email).trim().toLowerCase());
+
+const findEmployeeByEmail = async (email) => {
+  const normalized = normalizeEmail(email);
+  if (!normalized) {
+    return null;
+  }
+
+  return Employee.findOne({
+    email: { $regex: new RegExp(`^${normalized.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i") },
+  });
+};
+
 const findEmployeeAccountByEmail = async (email) => {
-  const employee = await Employee.findOne({ email: String(email).trim() });
+  const employee = await findEmployeeByEmail(email);
   if (!employee) {
-    throw notFound("Employee email not found");
+    throw notFound("Email nhân viên không tồn tại");
   }
 
   const user = await User.findOne({
     employeeId: employee._id,
     role: { $in: ["employee", "PM"] },
   });
-  if (!user) {
-    throw notFound("Employee account not found");
-  }
 
   return { employee, user };
 };
@@ -42,17 +52,17 @@ const hashOtp = (otp) => crypto.createHash("sha256").update(String(otp).trim()).
 export const login = async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) {
-    throw badRequest("Username and password are required");
+    throw badRequest("Vui lòng nhập tên đăng nhập và mật khẩu");
   }
 
   const user = await User.findOne({ username });
   if (!user) {
-    throw unauthorized("Invalid credentials");
+    throw unauthorized("Tên đăng nhập hoặc mật khẩu không đúng");
   }
 
   const passwordMatch = await bcrypt.compare(password, user.passwordHash);
   if (!passwordMatch) {
-    throw unauthorized("Invalid credentials");
+    throw unauthorized("Tên đăng nhập hoặc mật khẩu không đúng");
   }
 
   res.json({
@@ -69,101 +79,93 @@ export const login = async (req, res) => {
 export const requestPasswordOtp = async (req, res) => {
   const { email } = req.body;
   if (!email) {
-    throw badRequest("Email is required");
+    throw badRequest("Vui lòng nhập email");
   }
 
   const { employee, user } = await findEmployeeAccountByEmail(email);
+  const recipientEmail = normalizeEmail(email);
+
   const now = new Date();
   const otp = String(Math.floor(100000 + Math.random() * 900000));
 
   user.passwordResetOtpHash = hashOtp(otp);
   user.passwordResetOtpExpiresAt = new Date(now.getTime() + 10 * 60 * 1000);
-  user.passwordResetOtpRequestedAt = now;
   await user.save();
 
-  const mailResult = await sendOtpEmail({
-    to: employee.email,
+  await sendOtpEmail({
+    to: recipientEmail,
     otp,
     employeeName: employee.name,
   });
 
-  res.json({
-    message: mailResult.previewMode ? "OTP generated in preview mode" : "OTP sent successfully",
-    previewMode: mailResult.previewMode,
-    previewOtp: mailResult.previewOtp,
-  });
+  res.json({ email: recipientEmail });
 };
 
 export const verifyPasswordOtp = async (req, res) => {
   const { email, otp } = req.body;
   if (!email || !otp) {
-    throw badRequest("Email and OTP are required");
+    throw badRequest("Vui lòng nhập email và mã OTP");
   }
 
-  const { employee, user } = await findEmployeeAccountByEmail(email);
+  const { user } = await findEmployeeAccountByEmail(email);
   if (!user.passwordResetOtpHash || !user.passwordResetOtpExpiresAt) {
-    throw badRequest("OTP has not been requested");
+    throw badRequest("Chưa có mã OTP. Vui lòng gửi lại OTP");
   }
 
   if (new Date(user.passwordResetOtpExpiresAt).getTime() < Date.now()) {
-    throw badRequest("OTP has expired");
+    throw badRequest("Mã OTP đã hết hạn. Vui lòng gửi lại OTP");
   }
 
   if (hashOtp(otp) !== user.passwordResetOtpHash) {
-    throw badRequest("OTP is invalid");
+    throw badRequest("Mã OTP không đúng");
   }
 
   const resetToken = jwt.sign(
     {
       userId: user._id.toString(),
-      email: employee.email,
       purpose: "password-reset",
     },
     process.env.JWT_SECRET,
     { expiresIn: "10m" },
   );
 
-  res.json({
-    message: "OTP verified successfully",
-    resetToken,
-  });
+  res.json({ resetToken });
 };
 
 export const resetPasswordWithOtp = async (req, res) => {
   const { resetToken, newPassword } = req.body;
   if (!resetToken || !newPassword) {
-    throw badRequest("Reset token and new password are required");
+    throw badRequest("Thiếu thông tin đổi mật khẩu");
   }
 
   if (String(newPassword).length < 6) {
-    throw badRequest("New password must be at least 6 characters");
+    throw badRequest("Mật khẩu mới phải có ít nhất 6 ký tự");
   }
 
   let payload;
   try {
     payload = jwt.verify(resetToken, process.env.JWT_SECRET);
   } catch {
-    throw badRequest("Reset token is invalid or expired");
+    throw badRequest("Phiên đổi mật khẩu đã hết hạn. Vui lòng gửi lại OTP");
   }
 
   if (payload.purpose !== "password-reset" || !payload.userId) {
-    throw badRequest("Reset token is invalid");
+    throw badRequest("Phiên đổi mật khẩu không hợp lệ");
   }
 
   const user = await User.findById(payload.userId);
   if (!user) {
-    throw notFound("Account not found");
+    throw notFound("Tài khoản không tồn tại");
   }
 
   if (!user.passwordResetOtpHash || !user.passwordResetOtpExpiresAt) {
-    throw badRequest("OTP verification session is not available");
+    throw badRequest("Phiên xác thực OTP không còn hiệu lực. Vui lòng gửi lại OTP");
   }
 
   user.passwordHash = await bcrypt.hash(newPassword, 10);
   user.passwordResetOtpHash = "";
   user.passwordResetOtpExpiresAt = null;
-  user.passwordResetOtpRequestedAt = null;
   await user.save();
 
-  res.json({ message: "Password updated successfully" });
+  res.json({ ok: true });
 };

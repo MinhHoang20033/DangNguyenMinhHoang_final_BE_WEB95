@@ -1,4 +1,4 @@
-/* global process */
+
 import fs from "fs/promises";
 import path from "path";
 
@@ -6,34 +6,40 @@ import Employee from "../models/Employee.js";
 import { ensureUploadDirectory, getUploadRoot, sanitizeUploadFolderName } from "../middleware/upload.js";
 import { forbidden } from "../utils/httpError.js";
 
-export const EMPLOYEE_EDITABLE_FIELDS = ["progressChecks", "chatMessages", "tasks"];
+export const MEMBER_EDITABLE_FIELDS = ["chatMessages", "tasks"];
 
-export const DEPRECATED_PROJECT_FIELDS = [
-  "processControls",
-  "materialControls",
-  "revision",
-  "updateHistory",
-];
+const getNonAdminEditableFields = (canManageProjectOps) =>
+  canManageProjectOps
+    ? [...MEMBER_EDITABLE_FIELDS, PROGRESS_SECTION_KEY]
+    : MEMBER_EDITABLE_FIELDS;
 
 export const PROGRESS_SECTION_KEY = "progressChecks";
 export const PROGRESS_SECTION_LABEL = "Tiến độ dự án";
 
-export const isProjectManager = (project, employeeId) => {
+export const FORBIDDEN_PM_OR_ADMIN_TASKS =
+  "Chỉ PM (thành viên dự án) và admin mới được thêm hoặc xóa task";
+export const FORBIDDEN_PM_OR_ADMIN_TASK_FILES =
+  "Chỉ PM (thành viên dự án) và admin mới được tải tệp đính kèm task";
+export const FORBIDDEN_PM_OR_ADMIN_PROJECT_FILES =
+  "Chỉ PM (thành viên dự án) và admin mới được tải tệp liên quan dự án";
+export const FORBIDDEN_PM_OR_ADMIN_PROGRESS =
+  "Chỉ PM (thành viên dự án) và admin mới được chỉnh sửa tiến độ dự án";
+
+const isProjectMember = (project, employeeId) => {
   const id = employeeId == null ? "" : String(employeeId);
   if (!id) {
     return false;
   }
-  return String(project?.managerId ?? "") === id;
+  return (project?.members ?? []).some(
+    (member) => String(member.employeeId) === id,
+  );
 };
 
 export const canManageProjectOperations = (req, project) =>
   isAdmin(req) ||
-  isProjectManager(project, req.user?.employeeId) ||
   (req.user?.role === "PM" &&
     req.user?.employeeId &&
-    (project?.members ?? []).some(
-      (member) => String(member.employeeId) === String(req.user.employeeId),
-    ));
+    isProjectMember(project, req.user.employeeId));
 
 export const isTaskAssignee = (task, employeeId) => {
   const id = employeeId == null ? "" : String(employeeId);
@@ -43,12 +49,8 @@ export const isTaskAssignee = (task, employeeId) => {
   return (task?.assigneeIds ?? []).map(String).includes(id);
 };
 
-/** Xem / tải / gửi file — chỉ người được giao task hoặc PM/Admin */
 export const canInteractWithTaskFiles = (req, project, task) =>
   canManageProjectOperations(req, project) || isTaskAssignee(task, req.user?.employeeId);
-
-export const canUploadTaskSubmissionFiles = (req, project, task) =>
-  canInteractWithTaskFiles(req, project, task);
 
 export const canDeleteTaskSubmissionFile = (req, project, task, file) => {
   if (canManageProjectOperations(req, project)) {
@@ -210,7 +212,7 @@ export const EXCEL_EXTENSIONS = [".xls", ".xlsx", ".csv"];
 export const isAdmin = (req) => req.user?.role === "admin";
 
 export const getProjectUploadSubdir = (project) =>
-  sanitizeUploadFolderName(project?.name || project?._id || "project");
+  sanitizeUploadFolderName(project?._id?.toString?.() || project?.id || "project");
 
 export const ensureProjectUploadDirectory = (project) =>
   ensureUploadDirectory(getProjectUploadSubdir(project));
@@ -449,9 +451,6 @@ export const buildProjectUpdatePayload = async ({ req, existing }) => {
   const actorName = await getActorName(req);
   const canManageTasks = canManageProjectOperations(req, existing);
   let bodyForUpdate = { ...req.body };
-  DEPRECATED_PROJECT_FIELDS.forEach((field) => {
-    delete bodyForUpdate[field];
-  });
 
   const existingPlainTasks = toPlainTasks(existing.tasks);
   let incomingTasksForProgressLog = null;
@@ -464,7 +463,7 @@ export const buildProjectUpdatePayload = async ({ req, existing }) => {
     );
 
     if ([...nextTaskIds].some((taskId) => !existingTaskIds.has(taskId))) {
-      throw forbidden("Chỉ quản lý dự án và admin mới được thêm hoặc xóa task");
+      throw forbidden(FORBIDDEN_PM_OR_ADMIN_TASKS);
     }
 
     bodyForUpdate = {
@@ -478,7 +477,7 @@ export const buildProjectUpdatePayload = async ({ req, existing }) => {
   }
 
   const removedTaskFileUrls =
-    "tasks" in bodyForUpdate
+    "tasks" in bodyForUpdate && canManageTasks
       ? existingPlainTasks
           .filter(
             (task) =>
@@ -509,11 +508,16 @@ export const buildProjectUpdatePayload = async ({ req, existing }) => {
     }
   }
 
-  if (
+  const progressChanged =
     PROGRESS_SECTION_KEY in bodyForUpdate &&
     JSON.stringify(existing[PROGRESS_SECTION_KEY] ?? null) !==
-      JSON.stringify(bodyForUpdate[PROGRESS_SECTION_KEY] ?? null)
-  ) {
+      JSON.stringify(bodyForUpdate[PROGRESS_SECTION_KEY] ?? null);
+
+  if (progressChanged && !isAdmin(req) && !canManageTasks) {
+    throw forbidden(FORBIDDEN_PM_OR_ADMIN_PROGRESS);
+  }
+
+  if (progressChanged && (isAdmin(req) || canManageTasks)) {
     const sectionLabel =
       bodyForUpdate[PROGRESS_SECTION_KEY]?.title ||
       existing[PROGRESS_SECTION_KEY]?.title ||
@@ -528,7 +532,7 @@ export const buildProjectUpdatePayload = async ({ req, existing }) => {
     );
   }
 
-  const editablePayload = EMPLOYEE_EDITABLE_FIELDS.reduce((acc, field) => {
+  const editablePayload = getNonAdminEditableFields(canManageTasks).reduce((acc, field) => {
     if (field in bodyForUpdate) {
       acc[field] = bodyForUpdate[field];
     }
@@ -548,6 +552,5 @@ export const buildProjectUpdatePayload = async ({ req, existing }) => {
   return {
     removedTaskFileUrls,
     updatePayload,
-    unsetDeprecatedFields: DEPRECATED_PROJECT_FIELDS,
   };
 };

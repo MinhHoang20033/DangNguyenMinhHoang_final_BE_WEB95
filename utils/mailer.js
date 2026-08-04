@@ -1,5 +1,6 @@
-/* global process */
 import nodemailer from "nodemailer";
+
+import { badRequest } from "./httpError.js";
 
 const buildTransporter = () => {
   const service = process.env.SMTP_SERVICE;
@@ -32,25 +33,18 @@ export const sendOtpEmail = async ({ to, otp, employeeName }) => {
   const recipientName = employeeName || "bạn";
 
   if (!transporter) {
-    if (process.env.NODE_ENV !== "production") {
-      console.log(`[OTP PREVIEW] ${to}: ${otp}`);
-      return {
-        previewOtp: otp,
-        previewMode: true,
-      };
-    }
-
-    throw new Error("Email service is not configured. Please set SMTP environment variables.");
+    throw badRequest("Dịch vụ email chưa được cấu hình. Vui lòng liên hệ quản trị viên.");
   }
 
   const from = process.env.SMTP_FROM || process.env.SMTP_USER;
 
-  await transporter.sendMail({
-    from,
-    to,
-    subject: "Mã OTP đổi mật khẩu",
-    text: `Xin chào ${recipientName}, mã OTP đổi mật khẩu của bạn là ${otp}. Mã có hiệu lực trong 10 phút.`,
-    html: `
+  try {
+    await transporter.sendMail({
+      from,
+      to,
+      subject: "Mã OTP đổi mật khẩu",
+      text: `Xin chào ${recipientName}, mã OTP đổi mật khẩu của bạn là ${otp}. Mã có hiệu lực trong 10 phút.`,
+      html: `
       <div style="font-family: Arial, sans-serif; line-height: 1.6;">
         <h2>Mã OTP đổi mật khẩu</h2>
         <p>Xin chào ${recipientName},</p>
@@ -59,10 +53,9 @@ export const sendOtpEmail = async ({ to, otp, employeeName }) => {
         <p>Mã có hiệu lực trong 10 phút.</p>
       </div>
     `,
-  });
-
-  return {
-    previewOtp: "",
-    previewMode: false,
-  };
+    });
+  } catch (error) {
+    console.error("[SMTP] Gửi OTP thất bại:", error.message);
+    throw badRequest("Không gửi được email OTP. Vui lòng thử lại sau hoặc liên hệ quản trị viên.");
+  }
 };

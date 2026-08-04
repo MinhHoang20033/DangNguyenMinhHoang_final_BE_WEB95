@@ -16,7 +16,8 @@ import {
   canDeleteTaskAttachmentFile,
   canDeleteTaskSubmissionFile,
   canInteractWithTaskFiles,
-  canUploadTaskSubmissionFiles,
+  FORBIDDEN_PM_OR_ADMIN_PROJECT_FILES,
+  FORBIDDEN_PM_OR_ADMIN_TASK_FILES,
   isAdmin,
   sanitizeProjectTasksForViewer,
   TASK_SECTION_LABEL,
@@ -38,6 +39,65 @@ export const getProject = async (req, res) => {
   }
 
   res.json(sanitizeProjectTasksForViewer(project, req));
+};
+
+const CHAT_MESSAGE_DEFAULT_LIMIT = 10;
+const CHAT_MESSAGE_MAX_LIMIT = 50;
+
+const sortChatMessages = (messages = []) =>
+  [...messages].sort(
+    (left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime(),
+  );
+
+export const getProjectChatMessages = async (req, res) => {
+  const project = await Project.findOne({
+    _id: req.params.id,
+    ...buildProjectQuery(req),
+  });
+
+  if (!project) {
+    throw notFound("Project not found");
+  }
+
+  const limit = Math.min(
+    CHAT_MESSAGE_MAX_LIMIT,
+    Math.max(1, Number.parseInt(req.query.limit, 10) || CHAT_MESSAGE_DEFAULT_LIMIT),
+  );
+  const before = req.query.before ? String(req.query.before) : "";
+  const after = req.query.after ? String(req.query.after) : "";
+  const sorted = sortChatMessages(project.chatMessages ?? []);
+
+  if (after) {
+    const afterIndex = sorted.findIndex((message) => message.id === after);
+    const newer = afterIndex >= 0 ? sorted.slice(afterIndex + 1) : sorted;
+
+    res.json({
+      messages: newer,
+      hasMore: false,
+      total: sorted.length,
+    });
+    return;
+  }
+
+  if (before) {
+    const beforeIndex = sorted.findIndex((message) => message.id === before);
+    const older = beforeIndex > 0 ? sorted.slice(0, beforeIndex) : [];
+    const page = older.slice(-limit);
+
+    res.json({
+      messages: page,
+      hasMore: older.length > limit,
+      total: sorted.length,
+    });
+    return;
+  }
+
+  const newest = sorted.slice(-limit);
+  res.json({
+    messages: newest,
+    hasMore: sorted.length > limit,
+    total: sorted.length,
+  });
 };
 
 export const createProject = async (req, res) => {
@@ -69,7 +129,7 @@ export const loadProjectForUpload = async (req, res, next) => {
 
 export const uploadProjectFiles = async (req, res) => {
   if (!canManageProjectOperations(req, req.project)) {
-    throw forbidden("Chỉ quản lý dự án và admin mới được tải tệp liên quan dự án");
+    throw forbidden(FORBIDDEN_PM_OR_ADMIN_PROJECT_FILES);
   }
 
   const uploadedFiles = buildUploadedFileRecords(req.files, req.uploadSubdir);
@@ -103,26 +163,62 @@ const findTask = (project, taskId) => {
   return task;
 };
 
+export const authorizeProjectFileUpload = (req, res, next) => {
+  if (!canManageProjectOperations(req, req.project)) {
+    throw forbidden(FORBIDDEN_PM_OR_ADMIN_PROJECT_FILES);
+  }
+
+  next();
+};
+
+export const authorizeTaskFileUpload = (req, res, next) => {
+  if (!canManageProjectOperations(req, req.project)) {
+    throw forbidden(FORBIDDEN_PM_OR_ADMIN_TASK_FILES);
+  }
+
+  req.task = findTask(req.project, req.params.taskId);
+  req.allowedUploadExtensions = EXCEL_EXTENSIONS;
+  next();
+};
+
+export const authorizeTaskSubmissionUpload = (req, res, next) => {
+  const task = findTask(req.project, req.params.taskId);
+
+  if (!canInteractWithTaskFiles(req, req.project, task)) {
+    throw forbidden("Chỉ người được giao task mới được gửi file hoàn thành");
+  }
+
+  const uploaderId = String(req.user?.employeeId ?? "");
+  if (!canManageProjectOperations(req, req.project) && !uploaderId) {
+    throw forbidden("Tài khoản không liên kết nhân viên");
+  }
+
+  req.task = task;
+  req.taskUploadUserId = uploaderId;
+  req.allowedUploadExtensions = EXCEL_EXTENSIONS;
+  next();
+};
+
 const appendTaskFiles = async ({
   req,
   res,
   scope,
   noFilesMessage,
   activityText,
-  requireManager = false,
+  requireProjectOps = false,
   trackUploader = false,
 }) => {
-  if (requireManager && !canManageProjectOperations(req, req.project)) {
-    throw forbidden("Chỉ quản lý dự án và admin mới được tải tệp cho task");
+  if (requireProjectOps && !canManageProjectOperations(req, req.project)) {
+    throw forbidden(FORBIDDEN_PM_OR_ADMIN_TASK_FILES);
   }
 
-  const task = findTask(req.project, req.params.taskId);
+  const task = req.task || findTask(req.project, req.params.taskId);
 
-  if (trackUploader && !canUploadTaskSubmissionFiles(req, req.project, task)) {
+  if (trackUploader && !canInteractWithTaskFiles(req, req.project, task)) {
     throw forbidden("Chỉ người được giao task mới được gửi file hoàn thành");
   }
 
-  const uploaderId = trackUploader ? String(req.user?.employeeId ?? "") : "";
+  const uploaderId = trackUploader ? req.taskUploadUserId || String(req.user?.employeeId ?? "") : "";
   if (trackUploader && !canManageProjectOperations(req, req.project) && !uploaderId) {
     throw forbidden("Tài khoản không liên kết nhân viên");
   }
@@ -158,7 +254,7 @@ export const uploadTaskFiles = async (req, res) =>
     req,
     res,
     scope: "files",
-    requireManager: true,
+    requireProjectOps: true,
     noFilesMessage: "No Excel files uploaded",
     activityText: (actorName, task) =>
       `${actorName} đã tải lên tệp Excel cho task ${task.title || "công việc"}`,
@@ -200,7 +296,7 @@ export const deleteTaskFile = async (req, res) => {
       throw forbidden("Bạn chỉ có thể xóa file gửi lại do chính mình tải lên");
     }
   } else if (!canDeleteTaskAttachmentFile(req, project)) {
-    throw forbidden("Chỉ quản lý dự án và admin mới được xóa tệp đính kèm task");
+    throw forbidden(FORBIDDEN_PM_OR_ADMIN_TASK_FILES);
   }
 
   task[scope] = (task[scope] ?? []).filter((file) => file.id !== req.params.fileId);
@@ -290,24 +386,17 @@ export const updateProject = async (req, res) => {
     throw notFound("Project not found");
   }
 
-  const { removedTaskFileUrls, updatePayload, unsetDeprecatedFields } = await buildProjectUpdatePayload({
+  const { removedTaskFileUrls, updatePayload } = await buildProjectUpdatePayload({
     req,
     existing,
   });
   const editableKeys = Object.keys(updatePayload).filter((key) => key !== "activityLogs");
   if (!isAdmin(req) && editableKeys.length === 0) {
-    throw forbidden("You can only update project progress data");
+    throw forbidden("Không có dữ liệu được phép cập nhật");
   }
 
-  const mongoUpdate = {
-    ...updatePayload,
-    ...(unsetDeprecatedFields?.length && {
-      $unset: Object.fromEntries(unsetDeprecatedFields.map((field) => [field, ""])),
-    }),
-  };
-
-  const updated = await Project.findByIdAndUpdate(req.params.id, mongoUpdate, {
-    new: true,
+  const updated = await Project.findByIdAndUpdate(req.params.id, updatePayload, {
+    returnDocument: "after",
     runValidators: true,
   });
 

@@ -1,32 +1,21 @@
 import bcrypt from "bcryptjs";
-import fs from "fs/promises";
-import path from "path";
 
 import Employee from "../models/Employee.js";
 import Project from "../models/Project.js";
 import User from "../models/User.js";
-import { getUploadRoot } from "../middleware/upload.js";
+import { deleteUploadByUrl } from "../middleware/upload.js";
 import { badRequest, notFound } from "../utils/httpError.js";
 import { normalizeMoneyValue } from "../utils/numbers.js";
 import { getBaseUrl } from "../utils/request.js";
 
 const buildEmployeeAvatarUrl = (req, filename) => `${getBaseUrl(req)}/uploads/${filename}`;
 
-/** On Vercel, store avatar in MongoDB (base64) — /tmp files do not persist */
-const buildEmployeeAvatarFromFile = async (req, file) => {
-  if (!file) {
-    return "";
+const deleteUploadedAvatarFile = async (filename) => {
+  if (!filename) {
+    return;
   }
 
-  if (process.env.VERCEL) {
-    const filePath = path.join(getUploadRoot(), file.filename);
-    const buffer = await fs.readFile(filePath);
-    const mimeType = file.mimetype || "image/jpeg";
-    await fs.unlink(filePath).catch(() => {});
-    return `data:${mimeType};base64,${buffer.toString("base64")}`;
-  }
-
-  return buildEmployeeAvatarUrl(req, file.filename);
+  await deleteUploadByUrl(`/uploads/${filename}`);
 };
 
 const ACCOUNT_ROLES = ["employee", "PM"];
@@ -153,7 +142,32 @@ const parsePagination = (query) => {
   return { page, limit, skip: (page - 1) * limit };
 };
 
-const getAdminEmployeeQuery = (search) => buildEmployeeSearchQuery(search);
+const parseExcludeIds = (query) => {
+  const raw = query.excludeIds;
+  if (!raw) {
+    return [];
+  }
+
+  const values = Array.isArray(raw) ? raw : String(raw).split(",");
+  return values.map((id) => id.trim()).filter(Boolean);
+};
+
+const getAdminEmployeeQuery = (search, excludeIds = []) => {
+  const searchQuery = buildEmployeeSearchQuery(search);
+  const excludeQuery = excludeIds.length ? { _id: { $nin: excludeIds } } : null;
+
+  if (!Object.keys(searchQuery).length && !excludeQuery) {
+    return {};
+  }
+  if (!Object.keys(searchQuery).length) {
+    return excludeQuery;
+  }
+  if (!excludeQuery) {
+    return searchQuery;
+  }
+
+  return { $and: [searchQuery, excludeQuery] };
+};
 
 const getScopedEmployeeIds = async (employeeId) => {
   const projects = await Project.find({ "members.employeeId": employeeId });
@@ -171,8 +185,6 @@ const removeEmployeeFromProjects = async (employeeId) => {
     { "members.employeeId": id },
     { $pull: { members: { employeeId: id } } },
   );
-
-  await Project.updateMany({ managerId: id }, { $set: { managerId: "" } });
 
   const projectsWithAssignees = await Project.find({ "tasks.assigneeIds": id });
   await Promise.all(
@@ -207,7 +219,8 @@ export const getEmployees = async (req, res) => {
   const fetchAll = req.query.all === "true";
 
   if (req.user?.role === "admin") {
-    const query = getAdminEmployeeQuery(search);
+    const excludeIds = parseExcludeIds(req.query);
+    const query = getAdminEmployeeQuery(search, excludeIds);
 
     if (fetchAll) {
       const employees = await Employee.find(query).sort({ name: 1 });
@@ -274,7 +287,7 @@ export const createEmployee = async (req, res) => {
 
     const existingUser = await User.findOne({ username });
     if (existingUser) {
-      throw badRequest("Username already exists");
+      throw badRequest("Tên tài khoản đã tồn tại");
     }
 
     const normalizedEmail = normalizeEmail(employeePayload.email);
@@ -290,9 +303,7 @@ export const createEmployee = async (req, res) => {
       ...employeePayload,
       email: normalizedEmail,
       salary: normalizeMoneyValue(employeePayload.salary),
-      avatar: req.file
-        ? await buildEmployeeAvatarFromFile(req, req.file)
-        : employeePayload.avatar || "",
+      avatar: req.file ? buildEmployeeAvatarUrl(req, req.file.filename) : employeePayload.avatar || "",
     });
 
     await employee.save();
@@ -326,10 +337,17 @@ export const updateEmployee = async (req, res) => {
   const employeeId = req.params.id;
   const { userRole, ...rest } = req.body;
 
+  const existing = await Employee.findById(employeeId);
+  if (!existing) {
+    await deleteUploadedAvatarFile(req.file?.filename);
+    throw notFound("Employee not found");
+  }
+
   const normalizedEmail = normalizeEmail(rest.email);
   if (normalizedEmail) {
     const duplicateEmail = await findEmployeeByEmail(normalizedEmail, employeeId);
     if (duplicateEmail) {
+      await deleteUploadedAvatarFile(req.file?.filename);
       throw badRequest("Email đã được sử dụng");
     }
   }
@@ -340,13 +358,21 @@ export const updateEmployee = async (req, res) => {
     salary: normalizeMoneyValue(rest.salary),
   };
 
+  const previousAvatar = existing.avatar;
   if (req.file) {
-    updateData.avatar = await buildEmployeeAvatarFromFile(req, req.file);
+    updateData.avatar = buildEmployeeAvatarUrl(req, req.file.filename);
   }
 
-  const updated = await Employee.findByIdAndUpdate(employeeId, updateData, { new: true });
+  const updated = await Employee.findByIdAndUpdate(employeeId, updateData, {
+    returnDocument: "after",
+  });
   if (!updated) {
+    await deleteUploadedAvatarFile(req.file?.filename);
     throw notFound("Employee not found");
+  }
+
+  if (req.file && previousAvatar) {
+    await deleteUploadByUrl(previousAvatar);
   }
 
   if (userRole && ACCOUNT_ROLES.includes(userRole)) {
@@ -364,6 +390,12 @@ export const updateEmployee = async (req, res) => {
 export const deleteEmployee = async (req, res) => {
   const employeeId = req.params.id;
 
+  const employee = await Employee.findById(employeeId);
+  if (!employee) {
+    throw notFound("Employee not found");
+  }
+
+  await deleteUploadByUrl(employee.avatar);
   await removeEmployeeFromProjects(employeeId);
   await Employee.findByIdAndDelete(employeeId);
   await User.findOneAndDelete({ employeeId });

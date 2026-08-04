@@ -1,4 +1,8 @@
 import Partner from "../models/Partner.js";
+import { notFound } from "../utils/httpError.js";
+
+const DEFAULT_PAGE_SIZE = 10;
+const MAX_PAGE_SIZE = 100;
 
 const buildPartnerPayload = (body) => ({
   name: body.name || "",
@@ -7,9 +11,46 @@ const buildPartnerPayload = (body) => ({
   phone: body.phone || "",
 });
 
+const parsePagination = (query) => {
+  const page = Math.max(1, Number.parseInt(query.page, 10) || 1);
+  const limit = Math.min(
+    MAX_PAGE_SIZE,
+    Math.max(1, Number.parseInt(query.limit, 10) || DEFAULT_PAGE_SIZE),
+  );
+
+  return { page, limit, skip: (page - 1) * limit };
+};
+
+const buildPartnerSearchQuery = (search = "") => {
+  const keyword = search.trim();
+  if (!keyword) {
+    return {};
+  }
+
+  return {
+    $or: [
+      { name: { $regex: keyword, $options: "i" } },
+      { company: { $regex: keyword, $options: "i" } },
+    ],
+  };
+};
+
 export const getPartners = async (req, res) => {
-  const partners = await Partner.find().sort({ createdAt: -1 });
-  res.json(partners);
+  const search = req.query.search ?? "";
+  const query = buildPartnerSearchQuery(search);
+  const { page, limit, skip } = parsePagination(req.query);
+
+  const [partners, total] = await Promise.all([
+    Partner.find(query).sort({ createdAt: -1 }).skip(skip).limit(limit),
+    Partner.countDocuments(query),
+  ]);
+
+  res.json({
+    items: partners,
+    total,
+    page,
+    limit,
+  });
 };
 
 export const createPartner = async (req, res) => {
@@ -19,12 +60,18 @@ export const createPartner = async (req, res) => {
 
 export const updatePartner = async (req, res) => {
   const updated = await Partner.findByIdAndUpdate(req.params.id, buildPartnerPayload(req.body), {
-    new: true,
+    returnDocument: "after",
   });
+  if (!updated) {
+    throw notFound("Partner not found");
+  }
   res.json(updated);
 };
 
 export const deletePartner = async (req, res) => {
-  await Partner.findByIdAndDelete(req.params.id);
+  const deleted = await Partner.findByIdAndDelete(req.params.id);
+  if (!deleted) {
+    throw notFound("Partner not found");
+  }
   res.json({ message: "Deleted" });
 };
