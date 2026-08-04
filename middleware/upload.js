@@ -5,6 +5,9 @@ import multer from "multer";
 import path from "path";
 import { fileURLToPath } from "url";
 
+import { deleteCloudinaryByUrl, isCloudinaryConfigured } from "../config/cloudinary.js";
+import { deleteSupabaseByUrl, isSupabaseConfigured } from "../config/supabase.js";
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const INVALID_FILENAME_CHARS = /[<>:"/\\|?*]/g;
@@ -24,7 +27,7 @@ export const sanitizeUploadFolderName = (value = "") =>
     .replace(/^-|-$/g, "")
     .slice(0, 80) || "project";
 
-/** Vercel serverless only allows writes under /tmp */
+/** Local/dev fallback. Vercel serverless only allows writes under /tmp */
 export const getUploadRoot = () =>
   process.env.VERCEL
     ? path.join("/tmp", "uploads")
@@ -54,7 +57,7 @@ export const getUploadAbsolutePathFromUrl = (url) => {
   return path.join(getUploadRoot(), ...relativePath.split("/"));
 };
 
-export const deleteUploadByUrl = async (url) => {
+export const deleteLocalUploadByUrl = async (url) => {
   const absolutePath = getUploadAbsolutePathFromUrl(url);
   if (!absolutePath) {
     return;
@@ -63,16 +66,30 @@ export const deleteUploadByUrl = async (url) => {
   await fsPromises.unlink(absolutePath).catch(() => {});
 };
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, ensureUploadDirectory(req.uploadSubdir || ""));
-  },
-  filename: (req, file, cb) => {
-    const extension = path.extname(file.originalname).toLowerCase();
-    const uniqueName = `${Date.now()}-${crypto.randomUUID()}${extension}`;
-    cb(null, uniqueName);
-  },
-});
+/** Deletes from Cloudinary / Supabase / local disk depending on URL */
+export const deleteUploadByUrl = async (url) => {
+  if (!url) {
+    return;
+  }
+
+  const value = String(url);
+  if (value.includes("res.cloudinary.com")) {
+    await deleteCloudinaryByUrl(value);
+    return;
+  }
+
+  if (value.includes("/storage/v1/object/public/")) {
+    await deleteSupabaseByUrl(value);
+    return;
+  }
+
+  await deleteLocalUploadByUrl(value);
+};
+
+export const createUniqueFilename = (originalName = "") => {
+  const extension = path.extname(originalName).toLowerCase();
+  return `${Date.now()}-${crypto.randomUUID()}${extension}`;
+};
 
 const fileFilter = (req, file, cb) => {
   const allowedExtensions = req.allowedUploadExtensions;
@@ -90,6 +107,14 @@ const fileFilter = (req, file, cb) => {
   cb(null, false);
 };
 
-const upload = multer({ storage, fileFilter });
+/** Memory storage → upload buffers to Cloudinary / Supabase in controllers */
+const upload = multer({
+  storage: multer.memoryStorage(),
+  fileFilter,
+  limits: {
+    fileSize: 15 * 1024 * 1024,
+  },
+});
 
+export { isCloudinaryConfigured, isSupabaseConfigured };
 export default upload;

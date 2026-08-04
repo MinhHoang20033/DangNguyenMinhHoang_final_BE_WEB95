@@ -1,9 +1,17 @@
 
 import fs from "fs/promises";
 import path from "path";
+import crypto from "crypto";
 
 import Employee from "../models/Employee.js";
-import { ensureUploadDirectory, getUploadRoot, sanitizeUploadFolderName } from "../middleware/upload.js";
+import { uploadProjectFileBuffer, isSupabaseConfigured } from "../config/supabase.js";
+import {
+  createUniqueFilename,
+  deleteUploadByUrl,
+  ensureUploadDirectory,
+  getUploadRoot,
+  sanitizeUploadFolderName,
+} from "../middleware/upload.js";
 import { forbidden } from "../utils/httpError.js";
 
 export const MEMBER_EDITABLE_FIELDS = ["chatMessages", "tasks"];
@@ -248,44 +256,61 @@ export const collectTaskFileUrls = (task = {}) => [
   ...((task.submissionFiles ?? []).map((file) => file.url).filter(Boolean)),
 ];
 
-const getUploadAbsolutePath = (url) => {
-  const normalized = String(url).replace(/^\/uploads\/?/, "").replace(/\//g, path.sep);
-  return path.join(getUploadRoot(), normalized);
-};
-
 export const deleteFilesByUrls = async (urls = []) => {
-  await Promise.all(urls.map((url) => fs.unlink(getUploadAbsolutePath(url)).catch(() => {})));
+  await Promise.all(urls.filter(Boolean).map((url) => deleteUploadByUrl(url)));
 };
 
 export const deleteProjectUploadDirectory = async (project) => {
+  if (isSupabaseConfigured()) {
+    return;
+  }
+
   const folderPath = path.join(getUploadRoot(), getProjectUploadSubdir(project));
   await fs.rm(folderPath, { recursive: true, force: true }).catch(() => {});
 };
 
-export const buildUploadedFileRecords = (
+export const buildUploadedFileRecords = async (
   files = [],
   uploadSubdir,
   allowedExtensions = null,
   { uploadedBy = "" } = {},
-) =>
-  files
-    .filter((file) => {
-      if (!allowedExtensions) {
-        return true;
+) => {
+  const accepted = files.filter((file) => {
+    if (!allowedExtensions) {
+      return true;
+    }
+    return allowedExtensions.includes(path.extname(file.originalname).toLowerCase());
+  });
+
+  return Promise.all(
+    accepted.map(async (file) => {
+      const extension = path.extname(file.originalname).toLowerCase();
+      const filename = createUniqueFilename(file.originalname);
+      const objectPath = `${uploadSubdir}/${filename}`;
+
+      let url;
+      if (isSupabaseConfigured()) {
+        url = await uploadProjectFileBuffer(file.buffer, objectPath, file.mimetype);
+      } else {
+        const targetDir = ensureUploadDirectory(uploadSubdir);
+        await fs.writeFile(path.join(targetDir, filename), file.buffer);
+        url = `/uploads/${objectPath}`;
       }
-      return allowedExtensions.includes(path.extname(file.originalname).toLowerCase());
-    })
-    .map((file) => ({
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      name: file.originalname,
-      originalName: file.originalname,
-      url: `/uploads/${uploadSubdir}/${file.filename}`,
-      mimeType: file.mimetype,
-      extension: path.extname(file.originalname).toLowerCase(),
-      size: file.size,
-      uploadedAt: new Date(),
-      uploadedBy: uploadedBy ? String(uploadedBy) : "",
-    }));
+
+      return {
+        id: `${Date.now()}-${crypto.randomBytes(3).toString("hex")}`,
+        name: file.originalname,
+        originalName: file.originalname,
+        url,
+        mimeType: file.mimetype,
+        extension,
+        size: file.size,
+        uploadedAt: new Date(),
+        uploadedBy: uploadedBy ? String(uploadedBy) : "",
+      };
+    }),
+  );
+};
 
 const normalizeAssigneeIds = (assigneeIds = []) =>
   [...assigneeIds].map(String).sort().join(",");

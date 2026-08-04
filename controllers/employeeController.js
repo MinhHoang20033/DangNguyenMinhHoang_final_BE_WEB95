@@ -3,19 +3,32 @@ import bcrypt from "bcryptjs";
 import Employee from "../models/Employee.js";
 import Project from "../models/Project.js";
 import User from "../models/User.js";
-import { deleteUploadByUrl } from "../middleware/upload.js";
+import { uploadAvatarBuffer } from "../config/cloudinary.js";
+import {
+  createUniqueFilename,
+  deleteUploadByUrl,
+  ensureUploadDirectory,
+  isCloudinaryConfigured,
+} from "../middleware/upload.js";
 import { badRequest, notFound } from "../utils/httpError.js";
 import { normalizeMoneyValue } from "../utils/numbers.js";
 import { getBaseUrl } from "../utils/request.js";
 
-const buildEmployeeAvatarUrl = (req, filename) => `${getBaseUrl(req)}/uploads/${filename}`;
-
-const deleteUploadedAvatarFile = async (filename) => {
-  if (!filename) {
-    return;
+const saveEmployeeAvatar = async (file, req) => {
+  if (!file?.buffer) {
+    return "";
   }
 
-  await deleteUploadByUrl(`/uploads/${filename}`);
+  if (isCloudinaryConfigured()) {
+    const result = await uploadAvatarBuffer(file.buffer);
+    return result.secure_url;
+  }
+
+  const filename = createUniqueFilename(file.originalname);
+  const targetDir = ensureUploadDirectory("");
+  const fs = await import("fs/promises");
+  await fs.writeFile(`${targetDir}/${filename}`, file.buffer);
+  return `${getBaseUrl(req)}/uploads/${filename}`;
 };
 
 const ACCOUNT_ROLES = ["employee", "PM"];
@@ -298,12 +311,16 @@ export const createEmployee = async (req, res) => {
       }
     }
 
+    const avatarUrl = req.file
+      ? await saveEmployeeAvatar(req.file, req)
+      : employeePayload.avatar || "";
+
     employee = new Employee({
       employeeCode: await generateUniqueEmployeeCode(),
       ...employeePayload,
       email: normalizedEmail,
       salary: normalizeMoneyValue(employeePayload.salary),
-      avatar: req.file ? buildEmployeeAvatarUrl(req, req.file.filename) : employeePayload.avatar || "",
+      avatar: avatarUrl,
     });
 
     await employee.save();
@@ -329,6 +346,9 @@ export const createEmployee = async (req, res) => {
     if (employee?._id) {
       await Employee.findByIdAndDelete(employee._id).catch(() => null);
     }
+    if (employee?.avatar) {
+      await deleteUploadByUrl(employee.avatar);
+    }
     throw error;
   }
 };
@@ -339,7 +359,6 @@ export const updateEmployee = async (req, res) => {
 
   const existing = await Employee.findById(employeeId);
   if (!existing) {
-    await deleteUploadedAvatarFile(req.file?.filename);
     throw notFound("Employee not found");
   }
 
@@ -347,7 +366,6 @@ export const updateEmployee = async (req, res) => {
   if (normalizedEmail) {
     const duplicateEmail = await findEmployeeByEmail(normalizedEmail, employeeId);
     if (duplicateEmail) {
-      await deleteUploadedAvatarFile(req.file?.filename);
       throw badRequest("Email đã được sử dụng");
     }
   }
@@ -359,15 +377,19 @@ export const updateEmployee = async (req, res) => {
   };
 
   const previousAvatar = existing.avatar;
+  let nextAvatarUrl = null;
   if (req.file) {
-    updateData.avatar = buildEmployeeAvatarUrl(req, req.file.filename);
+    nextAvatarUrl = await saveEmployeeAvatar(req.file, req);
+    updateData.avatar = nextAvatarUrl;
   }
 
   const updated = await Employee.findByIdAndUpdate(employeeId, updateData, {
     returnDocument: "after",
   });
   if (!updated) {
-    await deleteUploadedAvatarFile(req.file?.filename);
+    if (nextAvatarUrl) {
+      await deleteUploadByUrl(nextAvatarUrl);
+    }
     throw notFound("Employee not found");
   }
 

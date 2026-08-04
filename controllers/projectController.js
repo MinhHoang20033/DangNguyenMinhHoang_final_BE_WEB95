@@ -132,7 +132,7 @@ export const uploadProjectFiles = async (req, res) => {
     throw forbidden(FORBIDDEN_PM_OR_ADMIN_PROJECT_FILES);
   }
 
-  const uploadedFiles = buildUploadedFileRecords(req.files, req.uploadSubdir);
+  const uploadedFiles = await buildUploadedFileRecords(req.files, req.uploadSubdir);
   if (!uploadedFiles.length) {
     throw badRequest("No files uploaded");
   }
@@ -223,7 +223,7 @@ const appendTaskFiles = async ({
     throw forbidden("Tài khoản không liên kết nhân viên");
   }
 
-  const uploadedFiles = buildUploadedFileRecords(req.files, req.uploadSubdir, EXCEL_EXTENSIONS, {
+  const uploadedFiles = await buildUploadedFileRecords(req.files, req.uploadSubdir, EXCEL_EXTENSIONS, {
     uploadedBy: trackUploader ? uploaderId : "",
   });
 
