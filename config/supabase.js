@@ -27,8 +27,8 @@ export const getSupabaseAdmin = () => {
   return client;
 };
 
-export const getSupabasePublicUrl = (objectPath) => {
-  const { data } = getSupabaseAdmin().storage.from(getSupabaseBucket()).getPublicUrl(objectPath);
+export const getSupabasePublicUrl = (objectPath, bucket = getSupabaseBucket()) => {
+  const { data } = getSupabaseAdmin().storage.from(bucket).getPublicUrl(objectPath);
   return data.publicUrl;
 };
 
@@ -45,28 +45,42 @@ export const uploadProjectFileBuffer = async (buffer, objectPath, contentType) =
     throw new Error(error.message || "Không thể tải tệp lên Supabase Storage");
   }
 
-  return getSupabasePublicUrl(objectPath);
+  return getSupabasePublicUrl(objectPath, bucket);
 };
 
-export const extractSupabaseObjectPath = (url = "") => {
-  const value = String(url).trim();
-  const marker = `/storage/v1/object/public/${getSupabaseBucket()}/`;
-  const index = value.indexOf(marker);
-  if (index < 0) {
+export const parseSupabasePublicUrl = (url = "") => {
+  const value = String(url).trim().split("?")[0].split("#")[0];
+  const match = value.match(/\/storage\/v1\/object\/public\/([^/]+)\/(.+)$/);
+  if (!match) {
     return null;
   }
 
-  return decodeURIComponent(value.slice(index + marker.length));
+  return {
+    bucket: decodeURIComponent(match[1]),
+    objectPath: decodeURIComponent(match[2]),
+  };
 };
 
+export const extractSupabaseObjectPath = (url = "") =>
+  parseSupabasePublicUrl(url)?.objectPath ?? null;
+
 export const deleteSupabaseByUrl = async (url) => {
-  const objectPath = extractSupabaseObjectPath(url);
-  if (!objectPath || !isSupabaseConfigured()) {
-    return;
+  const parsed = parseSupabasePublicUrl(url);
+  if (!parsed) {
+    return false;
   }
 
-  await getSupabaseAdmin()
-    .storage.from(getSupabaseBucket())
-    .remove([objectPath])
-    .catch(() => {});
+  if (!isSupabaseConfigured()) {
+    throw new Error("Thiếu cấu hình Supabase trên server");
+  }
+
+  const { error } = await getSupabaseAdmin()
+    .storage.from(parsed.bucket)
+    .remove([parsed.objectPath]);
+
+  if (error) {
+    throw new Error(error.message || "Không thể xóa tệp trên Supabase Storage");
+  }
+
+  return true;
 };

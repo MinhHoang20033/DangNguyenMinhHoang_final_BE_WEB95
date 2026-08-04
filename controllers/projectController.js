@@ -299,6 +299,8 @@ export const deleteTaskFile = async (req, res) => {
     throw forbidden(FORBIDDEN_PM_OR_ADMIN_TASK_FILES);
   }
 
+  await deleteFilesByUrls([targetFile.url].filter(Boolean));
+
   task[scope] = (task[scope] ?? []).filter((file) => file.id !== req.params.fileId);
   task.updatedAt = new Date();
 
@@ -317,7 +319,6 @@ export const deleteTaskFile = async (req, res) => {
   ];
 
   await project.save();
-  await deleteFilesByUrls([targetFile.url].filter(Boolean));
 
   res.json(sanitizeProjectTasksForViewer(project, req));
 };
@@ -337,6 +338,8 @@ export const deleteProjectFile = async (req, res) => {
     throw notFound("File not found");
   }
 
+  await deleteFilesByUrls([targetFile.url].filter(Boolean));
+
   project.relatedFiles = (project.relatedFiles ?? []).filter((file) => file.id !== req.params.fileId);
 
   const actorName = await getActorName(req);
@@ -351,7 +354,6 @@ export const deleteProjectFile = async (req, res) => {
   ];
 
   await project.save();
-  await deleteFilesByUrls([targetFile.url].filter(Boolean));
 
   res.json(project);
 };
